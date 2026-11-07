@@ -40,6 +40,7 @@ from germinal.design.esmfold2.framework import (
 from germinal.design.esmfold2.msa import MsaPolicyError, prepare_chains
 from germinal.design.esmfold2.policy import assert_process_has_no_af2, scan_forbidden
 from germinal.design.esmfold2.runtime import runtime_status
+from germinal.design.esmfold2.chainmap import read_result_chain_ids
 from germinal.design.esmfold2.scoring import directed_ipsae, evaluate_complex
 from germinal.utils.overlay_path import resolve_mmdesign_overlay
 from run_germinal_esmfold2 import enforce_single_gpu, main
@@ -210,6 +211,101 @@ class ScoringTests(unittest.TestCase):
         self.assertEqual(scored["reason"], "chain_id_length_mismatch")
 
 
+    def test_monomer_asym_ids_map_through_chain_lookup(self):
+        ids = [0] * 4 + [1] * 2
+        plddt = np.array([0.1, 0.1, 0.1, 0.1, 0.9, 0.85])
+        pae = np.full((6, 6), 1.0)
+        pae[:4, 4:] = 4.0
+        pae[4:, :4] = 4.0
+        scored = evaluate_complex(
+            chain_ids=ids,
+            chain_lookup={0: "A", 1: "B"},
+            plddt=plddt,
+            pae=pae,
+            expected=(("A", "target", 4), ("B", "binder", 2)),
+            iptm_global=0.99,
+        )
+        self.assertEqual(scored["status"], "SCORED")
+        self.assertAlmostEqual(scored["binder_plddt"], 0.875)
+        self.assertAlmostEqual(scored["binder_target_ipsae"], 1.0 / 17.0)
+        self.assertEqual(scored["chain_map"]["chain_lookup"], {"0": "A", "1": "B"})
+        self.assertFalse(scored["global_iptm_used_for_acceptance"])
+
+    def test_oligomer_lookup_keeps_equal_length_targets_distinct(self):
+        # Three tokens each for A and B, two for binder D. A and B share a length.
+        ids = [0, 0, 0, 1, 1, 1, 2, 2]
+        plddt = np.array([0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.8, 0.8])
+        pae = np.full((8, 8), 1.0)
+        pae[6:, :3] = 4.0
+        pae[:3, 6:] = 4.0
+        pae[6:, 3:6] = 30.0
+        pae[3:6, 6:] = 30.0
+        scored = evaluate_complex(
+            chain_ids=np.array(ids, dtype=np.int64),
+            chain_lookup={np.int64(0): "A", np.int64(1): "B", np.int64(2): "D"},
+            plddt=plddt,
+            pae=pae,
+            expected=(
+                ("A", "target", 3),
+                ("B", "target", 3),
+                ("D", "binder", 2),
+            ),
+        )
+        self.assertEqual(scored["status"], "SCORED")
+        self.assertAlmostEqual(scored["binder_plddt"], 0.8)
+        pairs = {row["target"]: row["mean_directions"] for row in scored["pair_scores"]}
+        self.assertAlmostEqual(pairs["A"], 1.0 / 17.0)
+        self.assertEqual(pairs["B"], 0.0)
+        self.assertAlmostEqual(scored["binder_target_ipsae"], 0.5 / 17.0)
+
+    def test_numeric_ids_without_lookup_fail_closed(self):
+        scored = evaluate_complex(
+            chain_ids=[0, 0, 1],
+            plddt=np.ones(3),
+            pae=np.ones((3, 3)),
+            expected=(("A", "target", 2), ("B", "binder", 1)),
+        )
+        self.assertEqual(scored["status"], "FAIL_CLOSED")
+        self.assertEqual(scored["reason"], "chain_id_set_mismatch")
+        self.assertIsNone(scored["binder_plddt"])
+        self.assertIsNone(scored["objective"])
+
+    def test_ambiguous_or_incomplete_lookup_fail_closed(self):
+        expected = (("A", "target", 2), ("B", "binder", 1))
+        ambiguous = evaluate_complex(
+            chain_ids=[0, 0, 1],
+            chain_lookup={0: "A", 1: "A"},
+            plddt=np.array([0.1, 0.1, 0.9]),
+            pae=np.ones((3, 3)),
+            expected=expected,
+        )
+        self.assertEqual(ambiguous["status"], "FAIL_CLOSED")
+        self.assertEqual(ambiguous["reason"], "chain_lookup_ambiguous")
+        self.assertIsNone(ambiguous["objective"])
+        incomplete = evaluate_complex(
+            chain_ids=[0, 0, 1],
+            chain_lookup={0: "A"},
+            plddt=np.ones(3),
+            pae=np.ones((3, 3)),
+            expected=expected,
+        )
+        self.assertEqual(incomplete["reason"], "chain_lookup_incomplete")
+        self.assertEqual(incomplete["status"], "FAIL_CLOSED")
+
+    def test_reader_uses_metadata_lookup_not_invented_letters(self):
+        class Meta:
+            chain_lookup = {0: "A", 1: "B"}
+
+        class Complex:
+            chain_id = np.array([0, 0, 1])
+            metadata = Meta()
+
+        ids, lookup = read_result_chain_ids(Complex())
+        self.assertEqual(ids, ["0", "0", "1"])
+        self.assertEqual(lookup, {"0": "A", "1": "B"})
+        self.assertIsNone(read_result_chain_ids(None)[0])
+
+
 class CampaignTests(unittest.TestCase):
     def _cfg(self, tmp: Path, **overrides) -> CampaignConfig:
         msa = _a3m(tmp, "tnf.a3m", TNFA_OFFICIAL)
@@ -262,6 +358,74 @@ class CampaignTests(unittest.TestCase):
         self.assertFalse(result["differentiable_logits"])
         self.assertGreaterEqual(len(calls), 2)
         assert_process_has_no_af2()
+
+    def test_trimer_validation_numeric_asym_ids(self):
+        template, _cdr = _template()
+
+        def fold(chains, seed):
+            ids = []
+            lookup = {}
+            plddt = []
+            for index, chain in enumerate(chains):
+                ids.extend([index] * len(chain.sequence))
+                lookup[index] = chain.id
+                fill = 0.77 if chain.role == "binder" else 0.3
+                plddt.extend([fill] * len(chain.sequence))
+            n = len(ids)
+            pae = np.full((n, n), 4.0)
+            np.fill_diagonal(pae, 0.0)
+            return {
+                "chain_ids": ids,
+                "chain_lookup": lookup,
+                "plddt": np.array(plddt),
+                "pae": pae,
+                "iptm_global": 0.8,
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._cfg(
+                Path(tmp),
+                mode="validate",
+                construct="tnfa_official_trimer",
+                binder_sequence=template,
+            )
+            result = run_campaign(cfg, fold)
+        self.assertEqual(result["status"], "ACCEPTED")
+        self.assertEqual(result["best"]["chain_map"]["targets"], ["A", "B", "C"])
+        self.assertEqual(result["best"]["chain_map"]["binder"], "D")
+        self.assertEqual(result["best"]["chain_map"]["lengths"], {"A": 157, "B": 157, "C": 157, "D": 131})
+        self.assertAlmostEqual(result["best"]["binder_plddt"], 0.77)
+
+    def test_campaign_scores_numeric_asym_ids(self):
+        template, _cdr = _template()
+
+        def fold(chains, seed):
+            ids = []
+            lookup = {}
+            plddt = []
+            for index, chain in enumerate(chains):
+                ids.extend([index] * len(chain.sequence))
+                lookup[index] = chain.id
+                fill = 0.91 if chain.role == "binder" else 0.2
+                plddt.extend([fill] * len(chain.sequence))
+            n = len(ids)
+            pae = np.full((n, n), 4.0)
+            np.fill_diagonal(pae, 0.0)
+            return {
+                "chain_ids": ids,
+                "chain_lookup": lookup,
+                "plddt": np.array(plddt),
+                "pae": pae,
+                "iptm_global": 0.1,
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._cfg(Path(tmp), steps=0, mode="design")
+            result = run_campaign(cfg, fold)
+        self.assertEqual(result["status"], "ACCEPTED")
+        self.assertAlmostEqual(result["best"]["binder_plddt"], 0.91)
+        self.assertGreater(result["best"]["binder_target_ipsae"], 0.0)
+        self.assertEqual(result["best"]["chain_map"]["binder"], "B")
 
     def test_fail_closed_never_accepts(self):
         def fold(chains, seed):

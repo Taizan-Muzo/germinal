@@ -11,6 +11,7 @@ from pathlib import Path
 
 import numpy as np
 
+from germinal.design.esmfold2.chainmap import read_result_chain_ids
 from germinal.design.esmfold2.msa import MsaPolicyError, PreparedChain, assert_binder_unpaired
 
 
@@ -90,13 +91,9 @@ class EsmFolder:
             if len(result) != 1:
                 raise RuntimeError(f"expected one diffusion sample, got {len(result)}")
             result = result[0]
-        chain_ids = None
-        complex_obj = getattr(result, "complex", None)
-        if complex_obj is not None and hasattr(complex_obj, "chain_id"):
-            raw_ids = complex_obj.chain_id
-            if hasattr(raw_ids, "detach"):
-                raw_ids = raw_ids.detach().cpu().tolist()
-            chain_ids = [str(x) for x in list(raw_ids)]
+        chain_ids, chain_lookup = read_result_chain_ids(
+            getattr(result, "complex", None)
+        )
         iptm = getattr(result, "iptm", None)
         if hasattr(iptm, "detach"):
             iptm = float(iptm.detach().cpu().reshape(-1)[0])
@@ -104,6 +101,7 @@ class EsmFolder:
             iptm = float(np.asarray(iptm).reshape(-1)[0])
         return {
             "chain_ids": chain_ids,
+            "chain_lookup": chain_lookup,
             "plddt": _numpy(getattr(result, "plddt", None)),
             "pae": _numpy(getattr(result, "pae", None)),
             "iptm_global": iptm,

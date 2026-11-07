@@ -15,6 +15,8 @@ from typing import Sequence
 
 import numpy as np
 
+from germinal.design.esmfold2.chainmap import resolve_model_chain_ids
+
 AGGREGATION = "mean_targets_of_mean_directions_v1"
 
 
@@ -80,6 +82,7 @@ def evaluate_complex(
     plddt,
     pae,
     expected: Sequence[tuple[str, str, int]],
+    chain_lookup: dict | None = None,
     iptm_global: float | None = None,
     pae_cutoff: float = 10.0,
     min_binder_plddt: float | None = None,
@@ -109,11 +112,16 @@ def evaluate_complex(
             g = float("nan")
         base["global_iptm"] = g if np.isfinite(g) else None
 
-    if chain_ids is None:
-        base["reason"] = "missing_chain_ids"
-        return base
-    ids = [str(c) for c in chain_ids]
     roles = {cid: role for cid, role, _length in expected}
+    mapped, map_evidence = resolve_model_chain_ids(
+        chain_ids, chain_lookup, set(roles)
+    )
+    if mapped is None:
+        base["reason"] = map_evidence["reason"]
+        base["chain_map"] = map_evidence
+        return base
+    ids = mapped
+    base["chain_map"] = map_evidence
     binders = [cid for cid, role, _length in expected if role == "binder"]
     targets = [cid for cid, role, _length in expected if role == "target"]
     if len(binders) != 1 or not targets:
@@ -125,19 +133,28 @@ def evaluate_complex(
     expected_n = sum(length for _cid, _role, length in expected)
     if len(ids) != expected_n:
         base["reason"] = "chain_id_length_mismatch"
-        base["chain_map"] = {"n_tokens": len(ids), "expected_tokens": expected_n}
+        base["chain_map"] = {
+            **map_evidence,
+            "n_tokens": len(ids),
+            "expected_tokens": expected_n,
+        }
         return base
     counts: dict[str, int] = {}
     for cid in ids:
         counts[cid] = counts.get(cid, 0) + 1
     if set(counts) != set(roles):
         base["reason"] = "chain_id_set_mismatch"
-        base["chain_map"] = {"observed": sorted(counts), "expected": sorted(roles)}
+        base["chain_map"] = {
+            **map_evidence,
+            "observed": sorted(counts),
+            "expected": sorted(roles),
+        }
         return base
     for cid, _role, length in expected:
         if counts[cid] != int(length):
             base["reason"] = "chain_length_mismatch"
             base["chain_map"] = {
+                **map_evidence,
                 "chain": cid,
                 "observed": counts[cid],
                 "expected": int(length),
@@ -207,6 +224,7 @@ def evaluate_complex(
             "objective": ipsae,
             "passes_thresholds": passes,
             "chain_map": {
+                **map_evidence,
                 "binder": binder_id,
                 "targets": list(targets),
                 "lengths": {cid: counts[cid] for cid in counts},

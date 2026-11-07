@@ -32,6 +32,41 @@ Use the ESMFold2 environment and weights that were already verified:
 - `ccd_cache` is that same directory. It is not a `ccd.pkl` file, and the
   builder must not download CCD.
 
+## ESMFold2 chain ids
+
+ESM 3.4.2 writes `MolecularComplex.chain_id` as int64 `asym_id`
+values, `0, 1, 2, ...` in `ProteinInput` order. The letters passed as
+`ProteinInput(id=...)` (`A`, `B`, `C`, `D`) are stored in
+`metadata.chain_lookup[asym_id]`, not in `chain_id`. Comparing the raw
+integers to the campaign ids produces `chain_id_set_mismatch` and a
+fail-closed score.
+
+The scorer applies that lookup and then computes binder pLDDT and
+binder–target ipSAE on the campaign ids. A missing lookup, a blank
+name, two asym ids sharing one name, or an asym id absent from the
+lookup stays `FAIL_CLOSED`. The code does not rename `0` to `A` by
+position.
+
+## Pull this checkout and restart only these workers
+
+The running workers loaded the previous code. Pull the esmfold2
+checkout and restart those processes. Do not reset or checkout
+`/run/ti/src/germinal`.
+
+```bash
+cd /run/ti/src/germinal-esmfold2
+git fetch origin cursor/esmfold2-design-backend-ca28
+git pull --ff-only origin cursor/esmfold2-design-backend-ca28
+
+# Processes of this generator only. Leave every other PID alone.
+pgrep -af run_germinal_esmfold2.py
+```
+
+Stop those PIDs, then launch the same one-GPU worker command again.
+The flock file is `esmfold2_<host>_gpu<index>.lock`. Do not clear
+freeze locks and do not start the legacy supervisor. A worker that is
+still inside a fold keeps the old scorer until that process exits.
+
 ## One worker per GPU
 
 Each process owns one card. Do not pass a comma-separated device list, and

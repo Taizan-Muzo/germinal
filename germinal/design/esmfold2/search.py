@@ -61,6 +61,7 @@ def _score_step(
     raw = fold_fn(chains, seed)
     scored = evaluate_complex(
         chain_ids=raw.get("chain_ids"),
+        chain_lookup=raw.get("chain_lookup"),
         plddt=raw.get("plddt"),
         pae=raw.get("pae"),
         expected=expected,
