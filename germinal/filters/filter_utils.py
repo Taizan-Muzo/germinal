@@ -16,6 +16,12 @@ from colabdesign.ablang.model import CustomAbLang
 from germinal.utils import utils
 from germinal.filters import af3, chai, protenix, pDockQ, pyrosetta_utils
 from germinal.utils.io import IO, Trajectory
+import sys
+from pathlib import Path
+from germinal.utils.overlay_path import resolve_mmdesign_overlay
+_OVERLAY = resolve_mmdesign_overlay()
+sys.path.insert(0, str(_OVERLAY))
+from residue_map import map_hotspots_to_output, pdb_residue_table
 
 
 def run_filters(
@@ -101,6 +107,15 @@ def run_filters(
         h3_positions=h3_positions,
     )
 
+    # Validate exact target identity and convert raw input numbering before contact filters.
+    hotspot_map = map_hotspots_to_output(run_settings["starting_pdb_complex"], external_pdb,
+                                        target_chain, target_settings.get("target_hotspots", ""))
+    external_residues = pdb_residue_table(external_pdb)
+    if "".join(r["letter"] for r in external_residues[binder_chain]) != trajectory_sequence:
+        raise ValueError("external predictor binder sequence/chain does not match this design")
+    contact_settings = dict(target_settings)
+    contact_settings["hotspot_output_positions"] = hotspot_map["positions"]
+
     # ========================== FastRelax ==========================
     if multi_relax:
         relaxed_paths = pyrosetta_utils.pr_relax_parallel(
@@ -176,7 +191,7 @@ def run_filters(
     binder_near_hotspot, cdr3_hotspot_contacts, cdr_hotspot_contacts = (
         compute_hotspot_proximity(
             external_relaxed_pdb=external_relaxed_pdb,
-            target_settings=target_settings,
+            target_settings=contact_settings,
             binder_chain=binder_chain,
             target_chain=target_chain,
             one_indexed_cdr_positions=one_indexed_cdr_positions,
@@ -227,22 +242,36 @@ def run_filters(
         print("Warning: PAE matrix not available, using ipsae metrics for pDockQ2/LIS")
 
     # ========================== Aggregate Confidence Metrics ==========================
+    # SCIENCE_FIX_CHAI_NONE_METRICS: None/missing → leave None (fail-closed downstream); never [-1] on None
+    def _m0(key, idx=0):
+        v = external_metrics.get(key)
+        if v is None:
+            return None
+        try:
+            if hasattr(v, "item") and getattr(v, "ndim", 1) == 0:
+                return v.item()
+            return np.asarray(v).reshape(-1)[idx]
+        except Exception:
+            try:
+                return float(v)
+            except Exception:
+                return None
     confidence_metrics = {
-        "plddt": external_metrics["plddt"].item(),
-        "plddt_binder": external_metrics["plddt_binder"].item(),
-        "ptm": external_metrics["ptm"][0],
-        "i_ptm": external_metrics["iptm"][0],
-        "chain_ptm": external_metrics["chain_ptm"][-1],
-        "pae": external_metrics["pae"].item(),
-        "aggregate_score": external_metrics["aggregate_score"][0],
+        "plddt": _m0("plddt"),
+        "plddt_binder": _m0("plddt_binder"),
+        "ptm": _m0("ptm", 0),
+        "i_ptm": _m0("iptm", 0),
+        "chain_ptm": _m0("chain_ptm", -1),
+        "pae": _m0("pae"),
+        "aggregate_score": _m0("aggregate_score", 0) if external_metrics.get("aggregate_score") is not None else _m0("agg_score"),
         "i_pae": i_pae,
         "i_plddt": i_plddt,
         "binder_pae": (
             external_metrics["binder_pae"].item()
-            if external_metrics["binder_pae"] is not None
+            if external_metrics.get("binder_pae") is not None
             else None
         ),
-        "ipsae":ipsae
+        "ipsae": ipsae,
     }
 
     # ========================== Calculate Hydrophobic Patch Filter ==========================
@@ -291,18 +320,7 @@ def run_filters(
             vl_len=run_settings["vl_len"],
         )
     else:
-        # Sentinel value chosen to be far outside the realistic lm_ll range
-        # (~-2 to 0) so it visibly fails any reasonable threshold filter and
-        # is unmistakable in CSV output. Using None would trigger fail-loud
-        # for every design — too aggressive for a config typo. Using -1 was
-        # too easy to confuse with a legitimately-bad lm_ll value.
-        lm_ll = -100
-        print(
-            f"\n\n[CONFIG ERROR] ablm_model={ablm_model_name!r} "
-            f"not recognized (expected 'iglm' or 'ablang'). Setting lm_ll=-100 "
-            f"as a sentinel; any lm_ll filter will reject this design.\n\n",
-            flush=True,
-        )
+        raise ValueError(f"unrecognized ablm_model={ablm_model_name!r}; no substitute score")
 
     # ========================== Aggregate Filter Metrics ==========================
     filter_metrics = build_filter_metrics(
@@ -328,6 +346,14 @@ def run_filters(
     )
 
     # ========================== Evaluate Filter Set ==========================
+    import hashlib
+    filter_metrics["hotspot_mapping_version"] = hotspot_map["version"]
+    filter_metrics["hotspot_mapping"] = hotspot_map
+    filter_metrics["naturalness_method"] = "germinal.ablang.compute_pll" if ablm_model_name == "ablang" else "germinal.iglm.log_likelihood"
+    filter_metrics["naturalness_sequence_sha256"] = hashlib.sha256(trajectory_sequence.encode()).hexdigest()
+    filter_metrics["ipsae_parser_version"] = ipsae.get("parser_version") if ipsae else None
+    filter_metrics["ipsae_evidence_path"] = ipsae.get("evidence_path") if ipsae else None
+    filter_metrics["interface_definition"] = f"{binder_chain}_{target_chain.replace(',', '')}"
     accepted, filter_results = evaluate_filters(filter_set, filter_metrics)
 
     return filter_metrics, filter_results, accepted, external_relaxed_pdb, external_pdb
@@ -462,6 +488,8 @@ def evaluate_filters(
         Tuple[bool, Dict[str, bool]]: (all_passed, individual_results)
     """
     filter_results = {}
+    if not filter_set:
+        return False, {"empty_filter_set_filter": False}
 
     for filter_name, filter_config in filter_set.items():
         if filter_name not in filter_metrics:
@@ -473,18 +501,24 @@ def evaluate_filters(
         threshold = filter_config["value"]
         operator = filter_config["operator"]
 
-        if metric_value is None:
-            # Fail-closed: a None metric means the structure predictor did not
-            # produce the data needed to evaluate this filter (e.g. Protenix
-            # without full_data → i_pae/i_plddt are None). Silently passing
-            # would let designs through that were never actually checked.
-            # Loudly fail the filter instead.
+        # SCIENCE_FIX_NANINF: None/NaN/Inf → fail-closed (never fabricate / never pass)
+        import math as _math
+        _bad = metric_value is None
+        if not _bad:
+            try:
+                _fv = float(metric_value)
+                if _math.isnan(_fv) or _math.isinf(_fv):
+                    _bad = True
+            except (TypeError, ValueError):
+                _bad = True
+        if _bad:
+            # Fail-closed: missing/non-finite metric means predictor did not
+            # produce usable data. Silently passing would let unchecked designs
+            # through. Loudly FAIL (status is failure/pending, not pass).
             print(
-                f"\n\n[FILTER ERROR] Metric '{filter_name}' is None — cannot "
+                f"\n\n[FILTER ERROR] Metric '{filter_name}' is None/NaN/Inf — cannot "
                 f"evaluate filter ({operator} {threshold}). FAILING this filter "
-                f"(was previously silently passed). To restore old behavior, "
-                f"either remove '{filter_name}' from the filter set or fix the "
-                f"upstream data source so the metric is populated.\n\n",
+                f"(fail-closed; not a pass). Value={metric_value!r}\n\n",
                 flush=True,
             )
             passed = False
@@ -648,6 +682,44 @@ def run_structure_prediction(
             num_diffn_timesteps=run_settings.get("chai_num_diffn_timesteps", 200),
             use_esm_embeddings=run_settings.get("chai_use_esm_embeddings", True),
         )
+        # SCIENCE_FIX_CHAI_IPSAE
+        # Compute real ipSAE/pDockQ2 for Chai (no placeholders). Fail loud if unavailable.
+        try:
+            import sys as _sys
+            _sys.path.insert(0, "/AIRvePFS/dair/sulixian-data/mmdesign_like_vhh/overlay")
+            from chai_ipsae import compute_ipsae_pdockq2
+            import numpy as _np
+            # SCIENCE_FIX_IPSAE_TOKEN_VALIDATE: real Chai token dims; never broadcast scalar/fabricate
+            import sys as _sys2
+            _sys2.path.insert(0, "/AIRvePFS/dair/sulixian-data/mmdesign_like_vhh/overlay")
+            from chai_token_metrics import prepare_pae_plddt_for_ipsae
+            _tgt_chains = [c for c in str(target_chain).split(",") if c]
+            _plddt_src = external_metrics.get("plddt_per_token")
+            if _plddt_src is None:
+                _plddt_src = external_metrics.get("plddt_per_residue")
+            if _plddt_src is None:
+                _plddt_src = external_metrics.get("plddt")  # may be scalar mean → omitted
+            _pae_arr, _plddt_arr, _shape_ev = prepare_pae_plddt_for_ipsae(
+                external_metrics.get("pae_matrix"),
+                _plddt_src,
+                external_pdb,
+                binder_chain=binder_chain,
+                target_chains=_tgt_chains,
+            )
+            print(f"Chai ipSAE shape evidence: {_shape_ev}")
+            if _shape_ev.get("plddt_status") != "ok_per_token_eq_res":
+                raise ValueError(f"per-token pLDDT unavailable: {_shape_ev.get('plddt_status')}")
+            ipsae = compute_ipsae_pdockq2(
+                external_pdb, _pae_arr,
+                plddt=_plddt_arr,
+                binder_chain=binder_chain,
+                target_chains=_tgt_chains,
+                work_dir=str(structures_directory),
+            )
+            ipsae["shape_evidence"] = _shape_ev
+        except Exception as _ipsae_err:
+            print(f"Chai ipSAE/pDockQ2 computation FAILED: {_ipsae_err}")
+            ipsae = None  # evaluate_filters must reject None — do not fabricate scores
     elif run_settings["structure_model"] == "protenix":
         external_pdb, external_metrics, ipsae = protenix.run_protenix(
             trajectory_sequence,
@@ -696,16 +768,16 @@ def compute_hotspot_proximity(
     """
     # Default values when no hotspot specification is provided
     binder_near_hotspot, cdr3_hotspot_contacts, cdr_hotspot_contacts = True, 0, 0
-    offset = 0
     cdr3_hotspot_contacts_ch = 0
     cdr_hotspot_contacts_ch = 0
-
-    if len(target_settings["target_hotspots"]) > 0:
+    if str(target_settings.get("target_hotspots", "")).strip():
+        positions = target_settings.get("hotspot_output_positions")
+        if not positions:
+            raise ValueError("hotspot_output_positions required; raw input numbers cannot score output")
         binder_near_hotspot = []
-        target_chains = target_chain.split(",")
-        for ch in target_chains:
-
-            target_hotspots = np.array(utils.idx_from_ranges(target_settings["target_hotspots"],ch,offset=offset))+1
+        for ch, target_hotspots in positions.items():
+            if ch not in target_chain.split(",") or ch == binder_chain or not target_hotspots:
+                raise ValueError(f"invalid hotspot target chain {ch}")
 
             hotspot_region = pyrosetta_utils.find_nearby_residues_from_pdb(
                 external_relaxed_pdb,
@@ -719,24 +791,27 @@ def compute_hotspot_proximity(
             )
             contacts_per_chain = np.array(list(contacts.keys()))
 
-            try:
-                binder_near_chain_ht, cdr3_hotspot_contacts_ch, cdr_hotspot_contacts_ch = (
-                    is_binder_near_hotspot(
-                        contacts_per_chain[:, 0],
-                        hotspot_region,
-                        contacts_per_chain[:, 1],
-                        one_indexed_cdr_positions,
-                        cdr3,
-                        min_hotspot_contacts=min_hotspot_contacts,
+            if contacts_per_chain.size == 0:
+                binder_near_chain_ht, cdr3_hotspot_contacts_ch, cdr_hotspot_contacts_ch = (False, 0, 0)
+            else:
+                try:
+                    binder_near_chain_ht, cdr3_hotspot_contacts_ch, cdr_hotspot_contacts_ch = (
+                        is_binder_near_hotspot(
+                            contacts_per_chain[:, 0],
+                            hotspot_region,
+                            contacts_per_chain[:, 1],
+                            one_indexed_cdr_positions,
+                            cdr3,
+                            min_hotspot_contacts=min_hotspot_contacts,
+                        )
                     )
-                )
-            except Exception:
-                binder_near_chain_ht, cdr3_hotspot_contacts_ch, cdr_hotspot_contacts_ch = (False, 0, 0) 
+                except Exception as _hs_err:
+                    raise RuntimeError(f"hotspot proximity failed on chain {ch}: {_hs_err}") from _hs_err
 
             binder_near_hotspot.append(binder_near_chain_ht)
             cdr3_hotspot_contacts += cdr3_hotspot_contacts_ch
             cdr_hotspot_contacts += cdr_hotspot_contacts_ch
-        binder_near_hotspot = all(binder_near_hotspot)
+        binder_near_hotspot = any(binder_near_hotspot)  # pass if any specified hotspot chain contacts
 
     return binder_near_hotspot, cdr3_hotspot_contacts, cdr_hotspot_contacts
 

@@ -1,5 +1,9 @@
 """
 Run Germinal for Antibody design.
+
+This entrypoint is the ColabDesign / AF2-Multimer generator.
+It is not an ESMFold2 backend. ESMFold2 sequence design is
+run_germinal_esmfold2.py. Do not point that backend at AF2 weights.
 """
 
 import time
@@ -88,6 +92,15 @@ def main(cfg: DictConfig):
             target_settings["target_hotspots"],
         )
         trajectory.set_save_location("trajectories")
+        trajectory.update_other_metrics({
+            "audit_contract_version": "mmdesign_fix_20261106_v2",
+            "target_name": target_settings["target_name"],
+            "binder_chain": target_settings["binder_chain"],
+            "target_chains": target_settings["target_chain"],
+            "generation_passed": False, "initial_filter_passed": False,
+            "abmpnn_completed": False, "final_filter_completed": False,
+            "final_filter_passed": False,
+        })
 
         print(f"\nStarting trajectory {i + 1}: {design_name}")
 
@@ -155,6 +168,8 @@ def main(cfg: DictConfig):
             )
         )
 
+        trajectory.update_other_metrics({"generation_passed": True,
+                                         "initial_filter_passed": bool(pass_initial_filters)})
         utils.clear_memory(clear_jax=False)
         if not pass_initial_filters:
             # save trajectory as not passing initial cofolding filters
@@ -226,6 +241,10 @@ def main(cfg: DictConfig):
                         "design_time": design_time,
                         "abmpnn_score": abmpnn_sequence["score"],
                         "abmpnn_seqid": abmpnn_sequence["seqid"],
+                        "abmpnn_completed": True,
+                        "final_filter_completed": True,
+                        "final_filter_passed": bool(accepted),
+                        "final_filter_spec": dict(final_filters),
                     }
                 )
                 mpnn_trajectory.set_save_location(

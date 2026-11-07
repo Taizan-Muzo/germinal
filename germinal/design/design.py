@@ -40,6 +40,20 @@ from germinal.utils.utils import hotspot_residues, calculate_clash_score
 from germinal.utils.io import IO
 
 
+
+def _finite_metric(x):
+    """Return float if finite; else None. Never invent a score."""
+    if x is None:
+        return None
+    try:
+        import math
+        f = float(x)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(f) or math.isinf(f):
+        return None
+    return f
+
 def germinal_design(
     design_name: str,
     run_settings: dict,
@@ -281,15 +295,20 @@ def germinal_design(
         )
         # perform softmax trajectory design
         if run_settings.get("softmax_steps", 35) > 0:
-            if (
-                clear_best
-                and af_model._tmp["best"]["mean_soft_pseudo"] < seq_entropy_threshold
-            ):
-                print(
-                    "Clearing best model due to low sequence entropy: ",
-                    af_model._tmp["best"]["mean_soft_pseudo"],
-                )
-                af_model.clear_best()
+            # SCIENCE_FIX_SEQENT3: guard BOTH sides; None/NaN/Inf = explicit pending, not compare, not fabricate
+            _msp = _finite_metric(af_model._tmp.get("best", {}).get("mean_soft_pseudo"))
+            if clear_best and seq_entropy_threshold is not None:
+                if _msp is None:
+                    print(
+                        "STAGE_PENDING seq_entropy: mean_soft_pseudo is None/NaN/Inf — "
+                        "skipping clear_best compare; metric unavailable (not a pass)"
+                    )
+                elif _msp < seq_entropy_threshold:
+                    print(
+                        "Clearing best model due to low sequence entropy: ",
+                        _msp,
+                    )
+                    af_model.clear_best()
             print("\n\n\nPhase 2: Softmax Optimisation")
             af_model.design_soft(
                 run_settings.get("softmax_steps", 35),
@@ -314,7 +333,14 @@ def germinal_design(
             softmax_plddt > save_filters["plddt"]
             and softmax_iptm > save_filters["i_ptm"]
             and softmax_ipae < save_filters["i_pae"]
-            and af_model._tmp["best"].get("mean_soft_pseudo", 1) >= seq_entropy_threshold
+            and (
+                seq_entropy_threshold is None
+                or (
+                    _finite_metric(af_model._tmp.get("best", {}).get("mean_soft_pseudo")) is not None
+                    and _finite_metric(af_model._tmp.get("best", {}).get("mean_soft_pseudo"))
+                    >= seq_entropy_threshold
+                )
+            )  # SCIENCE_FIX_SEQENT3 gate: missing/non-finite msp fails closed
         ):
             print(
                 "Softmax trajectory pLDDT good, continuing (plddt/iptm/ipae): ",

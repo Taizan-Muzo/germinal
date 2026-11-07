@@ -9,6 +9,14 @@ Germinal is a pipeline for designing de novo antibodies against specified epitop
 
 We describe Germinal in the preprint: ["Efficient generation of epitope-targeted de novo antibodies with Germinal"](https://www.biorxiv.org/content/10.1101/2025.09.19.677421v1)
 
+## ESMFold2 sequence-design backend
+
+`run_germinal.py` is the ColabDesign / AF2-Multimer generator. It is not an ESMFold2 backend.
+
+`run_germinal_esmfold2.py` is the ESMFold2 production generator. ESMFold2's public `fold` API is a diffusion sampler and does not expose sequence-logit gradients, so CDR design is a discrete search scored by ESMFold2 folds. The framework outside the CDRs is hard-locked. Target chains receive a real MSA whose query matches that chain; the binder is folded with no MSA. Acceptance uses binder pLDDT and binder–target ipSAE. Global iPTM is recorded and is not an acceptance score. Missing or non-finite scores fail closed. There is no fallback to the ColabDesign generator.
+
+One worker per GPU. Deploy steps for Tencent `/run/ti` are in `deploy/tencent/DEPLOY_ESMFOLD2.md`. If the machine has no GPU, `python scripts/smoke_esmfold2_backend.py` exits 2 with `BLOCKED_NO_GPU` and does not start a design.
+
 **⚠️ We are still actively working on code improvements [See our recommendations/tips](#tips-for-design)**. The Protenix and AbLang integrations are under active development — if you run into any issues please [open a GitHub issue](https://github.com/SantiagoMille/germinal/issues).
 
 > **Last user-validated commit:** [`2c0a13b`](https://github.com/SantiagoMille/germinal/commit/2c0a13b76833b6463cb59c571cfeadf17fd710c1) (PR #61 "Fix tokenizer for IgLM"). Commits after this point have been runtime- and review-validated separately on branch `fix/post-pr67-review`.

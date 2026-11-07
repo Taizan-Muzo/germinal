@@ -121,6 +121,29 @@ class design_model:
         b = b + (x[0] * bias_redesign)  # x is one-hot so b = bias_redesign in the position of AA
         b[pos_idx,:] = np.zeros(b[pos_idx,:].shape)
 
+      # SCIENCE_FIX_FW_HARDLOCK
+      # Hard-lock framework: huge bias + restore one-hot at non-CDR positions.
+      # pos_idx are CDR (redesign) positions relative to binder; FW = complement.
+      hard_lock_fw = kwargs.pop("hard_lock_framework", True)
+      if hard_lock_fw and getattr(self, "_wt_aatype", None) is not None:
+        import numpy as _np_fw
+        L = b.shape[0]
+        cdr = set(int(i) for i in _np_fw.asarray(pos_idx).ravel().tolist()) if pos_idx is not None else set()
+        wt = _np_fw.asarray(self._wt_aatype).ravel()
+        if wt.shape[0] == L:
+          for i in range(L):
+            if i in cdr:
+              continue
+            b[i, :] = -1e7
+            b[i, int(wt[i])] = 1e7
+            # lock seq params to WT one-hot at FW
+            if x.ndim == 3:
+              x[:, i, :] = 0
+              x[:, i, int(wt[i])] = 1
+            else:
+              x[i, :] = 0
+              x[i, int(wt[i])] = 1
+
     # disable certain amino acids by subtracting a huge number
     if rm_aa is not None and rm_aa is not False:
       for aa in rm_aa.split(","):
@@ -149,6 +172,27 @@ class design_model:
         if ("pos" in self.opt):
            x[:,pos_idx,:] = np.zeros(x[:,pos_idx,:].shape)      
         x = np.where(x.sum(-1, keepdims=True) == 1, x, y)
+
+    # SCIENCE_FIX_FW_HARDLOCK_RELOCK
+    # Re-assert framework one-hot after noise modes (gumbel/uniform can overwrite).
+    if getattr(self, "binder_redesign", False) and ("pos" in self.opt) and getattr(self, "_wt_aatype", None) is not None:
+      import numpy as _np_fw2
+      pos_idx2 = self.opt["pos"] - self._target_len
+      cdr2 = set(int(i) for i in _np_fw2.asarray(pos_idx2).ravel().tolist())
+      wt2 = _np_fw2.asarray(self._wt_aatype).ravel()
+      L2 = b.shape[0]
+      if wt2.shape[0] == L2:
+        for i in range(L2):
+          if i in cdr2:
+            continue
+          b[i, :] = -1e7
+          b[i, int(wt2[i])] = 1e7
+          if x.ndim == 3:
+            x[:, i, :] = 0
+            x[:, i, int(wt2[i])] = 1
+          else:
+            x[i, :] = 0
+            x[i, int(wt2[i])] = 1
 
     # set seq/bias/state
     self._params["seq"] = x

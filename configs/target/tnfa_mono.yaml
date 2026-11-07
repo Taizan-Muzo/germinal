@@ -1,0 +1,13 @@
+# @package target
+# TNFα monomer shortcut for short trajectories / mem pressure; same UniProt identity.
+
+target_name: "tnfa_mono"
+target_pdb_path: "pdbs/tnfa_mono.pdb"
+target_chain: "A"
+binder_chain: "B"
+target_hotspots: "A31,A32,A87,A115,A143"
+hotspot_residue: "Y82"
+dimer: false
+
+# SCIENCE_FIX: hotspot_residue is Chai model-seq 1-based (Y82), NOT raw PDB Y87
+# SCIENCE_FIX: construct mature6-157; D219 must be restored ASP in PDB

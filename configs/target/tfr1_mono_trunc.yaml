@@ -1,0 +1,15 @@
+# @package target
+# TfR1 TRUNCATED monomer design construct (mem-fit fallback).
+# Official identity: UniProt P02786 Cys89–Phe760 (NOT equal to this construct).
+# Construct: 11QC chain A residues 168–651 covering hotspots A208,A215,A348,A350,A611.
+# N727 glyco motif outside construct. Full A+B dimer validation is separate.
+# Do NOT claim full-length design ran.
+
+target_name: "tfr1_mono_trunc"
+target_pdb_path: "pdbs/tfr1_mono_trunc.pdb"
+target_chain: "A"
+binder_chain: "B"
+target_hotspots: "A208,A215,A348,A350,A611"
+hotspot_residue: ""
+dimer: false
+notes: "TRUNCATED monomer design construct; not full Cys89-Phe760; dimer validation separate"
