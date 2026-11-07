@@ -1,0 +1,31 @@
+# 152-aa PDB construct = official[5:] (N-terminal VRSSS removed, Asp kept).
+# msa_paths.tnfa_design152 must be an a3m whose query is exactly those 152
+# residues. The 157-aa MSA is not an acceptable substitute.
+backend: esmfold2
+mode: design
+construct: tnfa_design152_monomer
+msa_paths:
+  tnfa_design152: /REPLACE/with/tnfa_152_query.a3m
+binder_template: ""
+binder_sequence: null
+fw_lengths: [25, 17, 38, 14]
+cdr_lengths: [11, 8, 18]
+omit_aas: C
+require_target_msa: true
+binder_msa_path: null
+model_path: /run/ti/models/esmfold2
+ccd_cache: /run/ti/models/esmfold2
+num_loops: 20
+num_sampling_steps: 200
+msa_max_depth: 1024
+steps: 8
+mutations_per_step: 2
+temperature_start: 0.02
+temperature_end: 0.005
+randomize_cdrs: false
+seed: 1
+out_dir: /run/ti/mmdesign_like_vhh/runs/esmfold2_tnfa_152
+min_binder_plddt: null
+min_binder_ipsae: null
+pae_cutoff: 10.0
+hotspots_metadata: "A31,A32,A87,A115,A143"

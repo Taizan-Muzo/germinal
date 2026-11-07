@@ -80,10 +80,18 @@ def calculate_loop_sc(pose, binder_chain="B", target_chain="A"):
         tot_atoms += residue.natoms()
         sc_calc.AddResidue(1, residue)  # 1 = first molecule in comparison
 
-    # Add all residues from chain B
-    target_chain = target_chain.split(",") if isinstance(target_chain, str) else target_chain
+    # Add all residues from target chains
+    # SCIENCE_FIX_INTERFACE_DEF_LOOP_SC
+    # pose.chain(res_id) returns integer chain number; map PDB chain letters via PDBInfo.
+    target_chain = target_chain.split(",") if isinstance(target_chain, str) else list(target_chain)
+    _pdbinfo = pose.pdb_info()
+    def _chain_letter(res_id):
+        try:
+            return _pdbinfo.chain(res_id)
+        except Exception:
+            return str(pose.chain(res_id))
     for res_id in range(1, pose.total_residue() + 1):
-        if pose.chain(res_id) in target_chain:
+        if _chain_letter(res_id) in target_chain:
             residue = pose.residue(res_id)
             tot_atoms += residue.natoms()
             sc_calc.AddResidue(2, residue)  # 2 = second molecule in comparison
@@ -105,8 +113,12 @@ def score_interface(pdb_file, binder_chain="B", target_chain="A"):
     pose = pr.pose_from_pdb(pdb_file)
 
     # analyze interface statistics
+    # SCIENCE_FIX_INTERFACE_DEF
+    # Build interface from verified binder/target sets, e.g. D_ABC — never hardcode A_B.
+    _tgt = target_chain.replace(",", "") if isinstance(target_chain, str) else "".join(target_chain)
+    _iface = f"{binder_chain}_{_tgt}"
     iam = InterfaceAnalyzerMover()
-    iam.set_interface("A_B")
+    iam.set_interface(_iface)
     scorefxn = pr.get_fa_scorefxn()
     iam.set_scorefunction(scorefxn)
     iam.set_compute_packstat(True)

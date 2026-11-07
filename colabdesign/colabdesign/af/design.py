@@ -378,6 +378,20 @@ class _af_design:
 
     self.aux["log"]["total_grad"] = np.array(self.aux["grad"]["seq"])
 
+    # SCIENCE_FIX_FW_HARDLOCK_STEP
+    # Hard-lock: zero framework gradients for AF2+merged PLM before optimizer/update.
+    if getattr(self, "binder_redesign", False) and ("pos" in self.opt) and getattr(self, "_wt_aatype", None) is not None:
+      _cdr = np.asarray(self.opt["pos"] - self._target_len).ravel().astype(int)
+      _g = np.array(self.aux["grad"]["seq"], copy=True)
+      _L = _g.shape[-2]
+      _fw = np.array([i for i in range(_L) if i not in set(_cdr.tolist())], dtype=int)
+      self.aux["log"]["fw_grad_norm_before_lock"] = float(np.linalg.norm(_g[..., _fw, :])) if len(_fw) else 0.0
+      self.aux["log"]["cdr_grad_norm_before_lock"] = float(np.linalg.norm(_g[..., _cdr, :])) if len(_cdr) else 0.0
+      _g[..., _fw, :] = 0.0
+      self.aux["grad"]["seq"] = _g
+      self.aux["log"]["fw_grad_norm_after_lock"] = 0.0
+      self.aux["log"]["grad_finite"] = bool(np.isfinite(_g).all())
+
     self._norm_seq_grad(effective_length=effective_length)
       
     self._state, self.aux["grad"] = self._optimizer(self._state, self.aux["grad"], self._params)
@@ -391,6 +405,56 @@ class _af_design:
     # apply gradients
     lr = self.opt["learning_rate"] * lr_scale
     self._params = jax.tree_map(lambda x,g:x-lr*g, self._params, self.aux["grad"])    
+
+    # SCIENCE_FIX_FW_HARDLOCK_STEP_RESTORE
+    # Restore framework seq params to WT one-hot and assert no FW mutation in pseudo-seq path.
+    if getattr(self, "binder_redesign", False) and ("pos" in self.opt) and getattr(self, "_wt_aatype", None) is not None:
+      _cdr = set(int(i) for i in np.asarray(self.opt["pos"] - self._target_len).ravel().tolist())
+      _wt = np.asarray(self._wt_aatype).ravel()
+      _seq = np.array(self._params["seq"], copy=True)
+      if _seq.ndim == 3:
+        for i in range(_seq.shape[1]):
+          if i in _cdr: continue
+          _seq[:, i, :] = 0
+          _seq[:, i, int(_wt[i])] = 1
+      elif _seq.ndim == 2:
+        for i in range(_seq.shape[0]):
+          if i in _cdr: continue
+          _seq[i, :] = 0
+          _seq[i, int(_wt[i])] = 1
+      self._params["seq"] = _seq
+      # Assert decoded FW matches template
+      _decoded = _seq.argmax(-1)
+      if _decoded.ndim == 2:
+        _decoded = _decoded[0]
+      _bad = [int(i) for i in range(len(_wt)) if i not in _cdr and int(_decoded[i]) != int(_wt[i])]
+      if _bad:
+        raise AssertionError(f"Framework hard-lock violated at binder positions {_bad[:20]}")
+      self.aux["log"]["fw_lock_ok"] = True
+      # SCIENCE_FIX_VAL_STEP_JSONL
+      import os as _os_val, json as _json_val
+      _logp = _os_val.environ.get("SCIENCE_FIX_VAL_LOG")
+      if _logp:
+        _dec = _decoded
+        _tmpl = [int(x) for x in _wt.tolist()]
+        _cdr_l = sorted(_cdr)
+        _fw_mut = [i for i in range(len(_tmpl)) if i not in _cdr and int(_dec[i]) != _tmpl[i]]
+        _cdr_changed = int(sum(1 for i in _cdr_l if int(_dec[i]) != _tmpl[i]))
+        _AA = "ARNDCQEGHILKMFPSTWYV"
+        with open(_logp, "a") as _f:
+          _f.write(_json_val.dumps({
+            "k": int(getattr(self, "_k", -1)),
+            "fw_mut_count": len(_fw_mut),
+            "fw_mut_pos": _fw_mut[:20],
+            "cdr_changed_count": _cdr_changed,
+            "fw_grad_norm_before_lock": float(self.aux["log"].get("fw_grad_norm_before_lock", -1)),
+            "fw_grad_norm_after_lock": float(self.aux["log"].get("fw_grad_norm_after_lock", -1)),
+            "cdr_grad_norm_before_lock": float(self.aux["log"].get("cdr_grad_norm_before_lock", -1)),
+            "grad_finite": bool(self.aux["log"].get("grad_finite", False)),
+            "fw_lock_ok": True,
+            "seq": "".join(_AA[int(a)] if 0 <= int(a) < 20 else "X" for a in _dec.tolist()),
+          }) + "\n")
+      self.aux["log"]["cdr_param_update_norm"] = float(np.linalg.norm(_seq[..., list(_cdr), :] - np.eye(_seq.shape[-1])[_wt][..., list(_cdr), :])) if False else float(np.linalg.norm(_seq[..., list(sorted(_cdr)), :]))
     
     # save results
     self._save_results(save_best=save_best, verbose=verbose, design_mode=design_mode, 

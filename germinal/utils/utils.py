@@ -412,18 +412,28 @@ def hotspot_residues(
     structure = parser.get_structure("complex", trajectory_pdb)
 
     # AFM generates a single target chain even for multichain targets so need to rename binder as "B"
+    # SCIENCE_FIX_AF2_CHAIN_MAP
     model = next(structure.get_models())
     chains = list(model.get_chains())
-    if len(chains) == 2:
-        binder_chain = 'B'
+    chain_ids = [c.id for c in chains]
+    # If AF2 collapsed multi-target into A and binder into B, do NOT iterate logical ABC.
+    if len(chains) == 2 and set(chain_ids) == {"A", "B"}:
+        binder_chain = "B"
+        target_chain = ["A"]  # single collapsed target entity
+    elif len(chains) == 2:
+        binder_chain = chain_ids[-1]
 
     # Get the specified chain
+    if binder_chain not in structure[0]:
+        raise KeyError(f"binder_chain {binder_chain} missing; available={chain_ids}")
     binder_atoms = Selection.unfold_entities(structure[0][binder_chain], "A")
     binder_coords = np.array([atom.coord for atom in binder_atoms])
 
-    # Get atoms and coords for the target chain
+    # Get atoms and coords for the target chain(s) that exist
     target_atoms = []
     for chain_id in target_chain:
+        if chain_id not in structure[0]:
+            raise KeyError(f"target_chain {chain_id} missing; available={chain_ids}; AF2-collapsed PDBs must use target A only or remap first")
         target_atoms.extend(Selection.unfold_entities(structure[0][chain_id], "A"))
     target_coords = np.array([atom.coord for atom in target_atoms])
 

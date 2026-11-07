@@ -1,0 +1,30 @@
+# ESMFold2 monomer design. UniProt P02786 Cys89-Phe760 (672 aa).
+# Dimer folding is tfr1_official_dimer_validation.yaml and is not a design.
+backend: esmfold2
+mode: design
+construct: tfr1_official_monomer
+msa_paths:
+  tfr1_official: /AIRvePFS/dair/sulixian-data/mmdesign_like_vhh/experiments/antigen_msa_score_20261107_1550/msa/tfr1_antigen.colabfold.clean.a3m
+binder_template: ""
+binder_sequence: null
+fw_lengths: [25, 17, 38, 14]
+cdr_lengths: [11, 8, 18]
+omit_aas: C
+require_target_msa: true
+binder_msa_path: null
+model_path: /run/ti/models/esmfold2
+ccd_cache: /run/ti/models/esmfold2
+num_loops: 20
+num_sampling_steps: 200
+msa_max_depth: 1024
+steps: 4
+mutations_per_step: 2
+temperature_start: 0.02
+temperature_end: 0.005
+randomize_cdrs: false
+seed: 1
+out_dir: /run/ti/mmdesign_like_vhh/runs/esmfold2_tfr1_mono
+min_binder_plddt: null
+min_binder_ipsae: null
+pae_cutoff: 10.0
+hotspots_metadata: "A208,A215,A348,A350,A611"

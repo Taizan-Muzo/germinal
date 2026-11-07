@@ -1,0 +1,16 @@
+# @package target
+# TfR1/CD71 — Changjiang Cup track; identity = UniProt P02786 Cys89-Phe760
+# Official page: https://aiprotein.sjtu.edu.cn/targets
+# UniProt: https://rest.uniprot.org/uniprotkb/P02786.fasta (fetched 2026-11-05T23:44:44+08:00)
+# Sequence sha256: 5c886e4b99b913ccaa6f0a308db942448bb853da6bd340302350d6918d053d47
+# Reference 11QC A/B dimer for coordinates; crystal starts ~122 (missing UniProt 89-121).
+# N-glycosylation motifs (occlusion risk): N251, N317, N727.
+
+target_name: "tfr1"
+target_pdb_path: "pdbs/tfr1.pdb"
+target_chain: "A,B"
+binder_chain: "C"
+target_hotspots: "A208,A215,A348,A350,A611"
+hotspot_residue: ""
+dimer: true
+notes: "keep dimer environment; geometric Tf-facing hotspots on chain A"

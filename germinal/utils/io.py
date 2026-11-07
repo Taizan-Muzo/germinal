@@ -30,6 +30,7 @@ Dependencies:
 """
 
 from dataclasses import dataclass
+from copy import deepcopy
 from pathlib import Path
 import os
 import shutil
@@ -308,9 +309,9 @@ class Trajectory:
             cdr_lengths=self.cdr_lengths,
             target_hotspots=self.target_hotspots,
         )
-        new_trajectory.trajectory_metrics = self.trajectory_metrics
-        new_trajectory.filtering_metrics = self.filtering_metrics
-        new_trajectory.other_metrics = self.other_metrics
+        new_trajectory.trajectory_metrics = deepcopy(self.trajectory_metrics)
+        new_trajectory.filtering_metrics = deepcopy(self.filtering_metrics)
+        new_trajectory.other_metrics = deepcopy(self.other_metrics)
         new_trajectory.save_location = self.save_location
         new_trajectory.final_struct = self.final_struct
         return new_trajectory
@@ -567,21 +568,20 @@ class IO:
                     self.layout.all_csv, mode="w", header=True, index=False
                 )
             else:
-                # Only keep columns common to both the new row and the existing file
                 existing_df = pd.read_csv(self.layout.all_csv)
-                common_columns = [c for c in trajectory_df.columns if c in existing_df.columns]
-                if not common_columns:
-                    # If no common columns, just append all columns of the new row
-                    updated_all_trajectories_df = pd.concat(
-                        [existing_df, trajectory_df], ignore_index=True, sort=False
-                    )
-                else:
-                    # Only keep common columns for both
-                    trajectory_df_common = trajectory_df[list(common_columns)]
-                    existing_df_common = existing_df[list(common_columns)]
-                    updated_all_trajectories_df = pd.concat(
-                        [existing_df_common, trajectory_df_common], ignore_index=True
-                    )
+                updated_all_trajectories_df = pd.concat(
+                    [existing_df, trajectory_df], ignore_index=True, sort=False
+                )
                 updated_all_trajectories_df.to_csv(self.layout.all_csv, index=False)
+
+        # Receipt is published only after the structure and native CSV are durable.
+        # Legacy/manual callers remain unverified; they cannot acquire acceptance retroactively.
+        if trajectory_data.get("audit_contract_version") == "mmdesign_fix_20261106_v2":
+            import sys
+            from germinal.utils.overlay_path import resolve_mmdesign_overlay
+            overlay = resolve_mmdesign_overlay()
+            sys.path.insert(0, str(overlay))
+            from result_evidence import write_result_receipt
+            write_result_receipt(self.layout.root, trajectory.save_location, trajectory_data, structure_path)
 
         return 0

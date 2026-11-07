@@ -131,7 +131,9 @@ def run_chai(
     output_dir.mkdir(exist_ok=True)
 
     constraint = False
-    if cdr3_idx is not None and hotspot_residue is not None:
+    # SCIENCE_FIX_CHAI_HOTSPOT_EMPTY
+    # Empty string hotspot must NOT create a constraint (Chai parser requires non-empty residue).
+    if cdr3_idx is not None and hotspot_residue is not None and str(hotspot_residue).strip() != "":
         constraint = True
         # cdr3_idx is 1-indexed (PDB residue number, matches the chai
         # restraint template format like "L13"). binder_sequence is
@@ -181,6 +183,10 @@ def run_chai(
     scores_dict["pae_matrix"] = pae_matrix
     scores_dict["agg_score"] = np.mean(agg_scores)
     scores_dict["pae"] = torch.mean(pae)
+    # SCIENCE_FIX_PLDDT_TOKEN: Chai plddt is [num_tokens] (atom→token already done in chai_lab).
+    # Keep the vector for ipSAE. Mean alone is NOT a valid stand-in (causes len1!=paeN).
+    scores_dict["plddt_per_token"] = plddt
+    scores_dict["plddt_per_residue"] = plddt  # alias; equal only when token==res
     scores_dict["plddt"] = torch.mean(plddt)
     scores_dict["plddt_binder"] = torch.mean(
         plddt[target_len:]
@@ -188,8 +194,27 @@ def run_chai(
     scores_dict["binder_pae"] = torch.mean(
         torch.mean(pae[target_len:, target_len:])
     )  # Average PAE within binder chain
-    scores_dict["chain_ptm"] = [1] #placeholder values for chai
-    scores_dict["chain_iptm"] = [1] #placeholder values for chai
+    # SCIENCE_FIX_CHAI_CHAIN_PTM: use REAL per_chain_ptm from scores.npz when present.
+    # Do not fabricate 1.0; if missing leave None (fail-closed downstream, no TypeError).
+    if scores_dict.get("per_chain_ptm") is not None:
+        scores_dict["chain_ptm"] = scores_dict["per_chain_ptm"]
+    else:
+        scores_dict["chain_ptm"] = None
+    if scores_dict.get("per_chain_pair_iptm") is not None:
+        scores_dict["chain_iptm"] = scores_dict["per_chain_pair_iptm"]
+    else:
+        scores_dict["chain_iptm"] = None
+    # shape evidence for audit (not a pass/fail by itself)
+    try:
+        _pl = plddt.detach().cpu() if hasattr(plddt, "detach") else plddt
+        _pa = pae.detach().cpu() if hasattr(pae, "detach") else pae
+        scores_dict["_chai_shape_evidence"] = {
+            "plddt_per_token_shape": list(getattr(_pl, "shape", [])),
+            "pae_shape": list(getattr(_pa, "shape", [])),
+            "target_len_tokens_hint": int(target_len),
+        }
+    except Exception as _e:
+        scores_dict["_chai_shape_evidence"] = {"error": str(_e)}
 
     # Copy best structure to final save directory and clean up
     pdb_path = pdb_paths[best_sample]
@@ -198,6 +223,16 @@ def run_chai(
 
     shutil.copy(pdb_path, save_dir)
     new_path = os.path.join(save_dir, pdb_path.split("/")[-1])
+    # Keep design/sample-specific raw evidence; persistence failures must be visible.
+    import json
+    evidence_stem = Path(new_path).stem
+    raw_scores = Path(save_dir) / f"{evidence_stem}.scores.npz"
+    shutil.copy(output_dir / f"scores.model_idx_{best_sample}.npz", raw_scores)
+    side = {"plddt_per_token_shape": list(plddt.shape), "pae_shape": list(pae.shape),
+            "best_sample": int(best_sample), "seed": int(seed), "hash_id": hash_id,
+            "pdb_path": new_path, "scores_path": str(raw_scores),
+            "note": "protein-only token/residue identity checked before ipSAE"}
+    (Path(save_dir) / f"{evidence_stem}.tensor_shapes.json").write_text(json.dumps(side, indent=2))
 
     shutil.rmtree(str(tmp_dir), ignore_errors=True)
 

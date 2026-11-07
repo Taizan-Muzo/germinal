@@ -1,0 +1,18 @@
+# @package target
+# TNFα — Changjiang Cup track; identity = UniProt P01375 Val77-Leu233
+# Official page: https://aiprotein.sjtu.edu.cn/targets
+# UniProt: https://rest.uniprot.org/uniprotkb/P01375.fasta (fetched 2026-11-05T23:44:44+08:00)
+# Sequence sha256: 788eca607f0924e37a17c50cf53e6f7cd09164eeccf8a2f35e0fd6d904293950
+# Reference structure 1TNF A/B/C is for illustration/coordinates only; PDB misses N-term VRSSS (UniProt 77-81).
+
+target_name: "tnfa"
+target_pdb_path: "pdbs/tnfa.pdb"
+target_chain: "A,B,C"
+binder_chain: "D"
+target_hotspots: "A31,A32,A87,A115,A143"
+hotspot_residue: "Y82"
+dimer: false
+notes: "trimer; hotspots on chain A receptor-binding face; reproducible fixed set"
+
+# SCIENCE_FIX: hotspot_residue is Chai model-seq 1-based (Y82), NOT raw PDB Y87
+# SCIENCE_FIX: construct mature6-157; D219 must be restored ASP in PDB
